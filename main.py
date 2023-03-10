@@ -1,25 +1,32 @@
 import discord
-import sqlite3
 import os.path
 import time
 
+import engagement_checker
 import keys
 
-# check for saved users and load them in
-posts = {}
 users = {}
-
-if (os.path.isfile("users.py")):
+if (os.path.isfile("user_list.py")):
     print("found users")
+    import user_list
+    users = user_list.users
 else:
     print("didn't find users")
 
-if (os.path.isfile("posts.py")):
+posts = []
+if (os.path.isfile("post_list.py")):
     print("found posts")
+    import post_list
+    posts = post_list.posts
 else:
     print("didn't find posts")
 
-post_message_intro = "Leave a like and a comment on every post here before linking your own post\nCurrent posts:\n"
+print(f"USERS: {users}")
+
+# ADD MORE INFO ABOUT HOW TO USE
+post_message_intro = '''If it's your first time here, send a link to your LinkedIn profile first. Then you can send a link to your post.\n
+Leave a like on every post here before linking your own post\n
+Current posts:\n'''
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -44,8 +51,14 @@ def cutendpos(s, n):  # Cuts end of a string n = characters from start
     return s[0:n]
 
 
-def check_engagement(account):
-    print("checking")
+async def check_engagement(account):
+    print(f"checking for {users[account]}")
+    for post in posts:
+        print(f"checking post {post}")
+        result = engagement_checker.check_post(post['post'], users[account])
+        if (result == False):
+            return False
+    return True
 
 
 def add_post(post, user):
@@ -59,8 +72,12 @@ async def update_post_message():
     message = await channel.fetch_message(post_message)
 
     new_text = post_message_intro
-    for user in posts:
-        new_text += f" - <{posts[user]}>"
+
+    if len(posts) > 3:
+        del posts[0]
+
+    for post in posts:
+        new_text += f" - <{post['post']}>\n"
     await message.edit(content=new_text)
 
 
@@ -76,13 +93,31 @@ async def status_update(text):
     await message.edit(content=new_text)
 
 
-# [
-# {user: 011001001, post: "https:linkedin.com/post/123490124"}
-# {user: 011001001, post: "https:linkedin.com/post/123490124"}
-# ]
+async def set_status(text):
+    print("setting status")
+    channel = client.get_channel(linkedin_channel)
+    message = await channel.fetch_message(status_message)
+    new_text = f"Status: Busy :no_entry:\n{text}"
+    await message.edit(content=new_text)
 
-# can append to end
-# can pop oldest
+
+def is_user_in_post_list(user):
+    for post in posts:
+        if (post['user'] == user):
+            return True
+    return False
+
+
+def save_posts_to_file():
+    print("saving posts")
+    file = open("post_list.py", "w")
+    file.write(f"posts = {posts}")
+
+
+def save_users_to_file():
+    print("saving users")
+    file = open("user_list.py", "w")
+    file.write(f"users = {users}")
 
 
 @client.event
@@ -93,6 +128,7 @@ async def on_message(message):
     if message.author == client.user:
         if (msgtxt.find("Current posts") > -1):
             post_message = message.id
+            await update_post_message()
         if (msgtxt.find("Status:") > -1):
             status_message = message.id
         return
@@ -104,32 +140,32 @@ async def on_message(message):
         print(msgtxt.find("http"))
         if (msgtxt.find('www.linkedin.com/posts/') > -1):
             print("probably a post link")
-
-            # check if user had saved their linkedin username
-            # if saved,
-            if (message.author in users):
+            if (message.author.id in users):
                 print("user is registered")
-                # check current posts to see if they commented and liked
-                # if yes,
-                # add their link to list (remove last if over limit)
-                if (message.author not in posts):
+                if (is_user_in_post_list(message.author.id) == False or message.author == "191925539206987776"):
                     plain_link = msgtxt
-                    if (plain_link.find("?") > -1):
-                        plain_link = cutendpos(msgtxt, msgtxt.find("?"))
-                    posts[message.author] = plain_link
+                    author = message.author.id
                     await message.delete()
-                    await update_post_message()
-                    await status_update("Thank you for sharing your post, added to the list")
+                    await set_status("Currently checking engagement on listed posts 🕵️")
+                    passed_engagement_check = await check_engagement(author)
+                    if (passed_engagement_check):
+                        if (plain_link.find("?") > -1):
+                            plain_link = cutendpos(msgtxt, msgtxt.find("?"))
+                        posts.append({'user': author, 'post': plain_link})
+                        print(f"POSTS: {posts}")
+                        await update_post_message()
+                        await status_update("Thank you for sharing your post, added to the list")
+                        save_posts_to_file()
+                    else:
+                        await status_update("❌Couldn't find likes from you on all listed posts.❌")
                 else:
                     print("already a post in list")
                     await message.delete()
                     await status_update("You already have a post in the list, please wait")
-            # if no
             else:
                 print("user is not registered")
-                await status_update("No LinkedIn profile saved for you, please send a link to your LinkedIn Profile")
                 await message.delete()
-                # status message says check failed.
+                await status_update("No LinkedIn profile saved for you, please send a link to your LinkedIn Profile")
         elif (msgtxt.find("www.linkedin.com/in/") > -1):
 
             print("probably a profile link")
@@ -138,11 +174,12 @@ async def on_message(message):
             print(username)
             username = cutendpos(username, username.find("/"))
             print(username)
-            users[message.author] = username
+            users[message.author.id] = username
 
             await message.delete()
+            save_users_to_file()
 
-            await status_update(f"Thank you for adding your LinkedIn profile, {message.author.mention}")
+            await status_update(f"Thank you for adding your LinkedIn profile, {message.author.mention}. You may now share your posts after liking & commenting on the current ones")
 
         #
         else:
@@ -173,11 +210,5 @@ async def on_ready():
 
         await channel.send("Status: Available :white_check_mark:")
 
-        # get all message, remove non-bot
-        # check if 2 messages exist from bot
-        # if not, send 2 messages
-        # if do, save message IDs for editing later
 
 client.run(keys.discord)
-
-# https://www.linkedin.com/posts/sakerhetspolisen_saeukerhetspolisen2022abr2023-activity-7034825294343483393-YATY?utm_source=share&utm_medium=member_desktop

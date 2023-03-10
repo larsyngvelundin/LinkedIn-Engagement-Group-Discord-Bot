@@ -1,3 +1,5 @@
 
 keys.py
 *.pyc
+post_list.py
+user_list.py
